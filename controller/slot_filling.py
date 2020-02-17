@@ -1,23 +1,24 @@
 from __future__ import print_function
-from flask import Flask, request, make_response, jsonify, session, Blueprint
 import sys
 import os
 import json
 import dialogflow_v2
 import requests
-from dialogflow_v2 import types
+import time
+import re
+import dateparser
+import dateutil.relativedelta
+import concurrent
 
+from flask import Flask, request, make_response, jsonify, session, Blueprint
+from dialogflow_v2 import types
 from google.cloud import language_v1, language
 from google.cloud.language_v1 import enums, types
 from text2digits import text2digits
-import time
-import dateparser
-import dateutil.relativedelta
 from datetime import datetime, date, time, timedelta
 from pprint import pprint
-
 from controller.accounting_head import sendResponse, getTags
-import re
+from datetime import datetime
 
 slot_fill = Blueprint('slot_fill', __name__)
 
@@ -44,7 +45,7 @@ class lastEntry():
     fullEntity = 0
     askFor = 'None'
     category = ''
-    # tags = []
+    tags = []
 
     def isEmpty(self):
         if self.Amount == '0' and self.Description == '' and self.ExpenseType == '' and self.entitySend == '':
@@ -72,7 +73,7 @@ class lastEntry():
         self.fullEntity = 0
         self.askFor = 'None'
         self.category = ''
-        # self.tags = []
+        self.tags = []
 
     def emptyList(self):
         if self.Amount == '0':
@@ -138,12 +139,12 @@ def filterResults(text):
 
 
 def mapAChead(acHead):
-    acHead = acHead.replace(' ','_').lower()
+    acHead = acHead.replace(' ', '_').lower()
     AcHeadMap = {
         "office_expenses": 2,
         "advertising_and_marketing": 3,
         "employee_benefits": 5,
-        "professional_fees": 6,
+        "professional_fees2": 6,
         "professional_fees": 1,
         "education_and_training": 7,
         "rent": 8,
@@ -159,23 +160,24 @@ def mapAChead(acHead):
         return 15
 
 
-@slot_fill.route('/slotfill/', methods=['GET', 'POST'])
-def send_response():
-    req = request.get_json(force=True)
+def getACHead(text):
+    output = json.loads(json.dumps(sendResponse(
+        json.loads(json.dumps(text)))))['accountHead']
+    return output.replace('_', " ").title()
 
-    inputText = str(req.get('queryResult').get('queryText'))
 
-    oldValue.Description = inputText if oldValue.Description == '' else oldValue.Description
+def receiveTags(text):
+    tempList = []
+    if(oldValue.tags == []):
+        tempList = json.loads(json.dumps(getTags(
+        json.loads(json.dumps(text)))))['outflow_tags']
+        oldValue.tags.append(oldValue.category.title())
+        for string in tempList:
+            oldValue.tags.append(string.title())
+    return ''
 
-    oldValue.category = sendResponse(
-        {'inputText': oldValue.Description})['accountHead'] if oldValue.category == '' else oldValue.category
 
-    inputIntent = str(req.get('queryResult').get('intent').get('displayName'))
-
-    filteredText = filterResults(inputText)
-
-    # Step 2: call to Google NL API with the filtered text
-
+def callNLP(filteredText):
     document = language.types.Document(
         content=filteredText.title(),
         type=language.enums.Document.Type.PLAIN_TEXT
@@ -189,15 +191,71 @@ def send_response():
 
     response = client1.annotate_text(document, features)
 
+    changeVar = 0
+    for entity in response.entities:
+        entityDetectList = ["CONSUMER_GOOD", "OTHER", "WORK_OF_ART",
+                            "UNKNOWN", "EVENT", "PERSON", "ORGANIZATION"]
+        # For List of entities
+        if any(x in enums.Entity.Type(entity.type).name for x in entityDetectList):
+            if((entity.name.title() != 'Subscription' or entity.name.title() != 'Rent' or entity.name.title() != 'Purchase')):
+                if(oldValue.askFor == 'None' or oldValue.askFor == 'Entity'):
+                    oldValue.entitySend += (entity.name + ', ')
+                    changeVar = 1
+    # For date
+        if ("DATE" in enums.Entity.Type(entity.type).name):
+            oldValue.paymentDate = dateparser.parse(entity.name)
+            if(oldValue.DueDate == "" and oldValue.recurrence == "Yes"):
+                oldValue.DueDate = oldValue.paymentDate - \
+                    timedelta(days=(oldValue.paymentDate.day-1))
+
+    oldValue.fullEntity = changeVar
+
+    return response
+
+
+@slot_fill.route('/slotfill/', methods=['GET', 'POST'])
+def send_response():
+
+    start_time = datetime.now()
+
+    req = request.get_json(force=True)
+    inputText = str(req.get('queryResult').get('queryText'))
+    oldValue.Description = inputText if oldValue.Description == '' else oldValue.Description
+    # oldValue.category = sendResponse(
+    # {'inputText': oldValue.Description})['accountHead'] if oldValue.category == '' else oldValue.category
+    inputIntent = str(req.get('queryResult').get('intent').get('displayName'))
+
+    filteredText = filterResults(inputText)
+    print('Text is Filtered: ', str(datetime.now() - start_time))
+
+    listTosend = {'inputText':  str(filteredText)}
+    print('Payment Status is Filtered: ', str(datetime.now() - start_time))
+
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        if(oldValue.category == ''):
+            future = executor.submit(getACHead, listTosend)
+            oldValue.category = future.result()
+            print('Account Head: ', str(datetime.now() - start_time))
+
+        tempList = []
+        if(oldValue.tags == []):
+            future1 = executor.submit(receiveTags, listTosend)
+            tempList = future1.result()
+            print('Tags = ', str(oldValue.tags))
+            print('Tags: ', str(datetime.now() - start_time))
+
+        # Step 2: call to Google NL API with the filtered text
+        future2 = executor.submit(callNLP, filteredText)
+        response = future2.result()
+
+        print('Received NLP Response: ', str(datetime.now() - start_time))
+
     # Price Check
 
     print('Checking for : '+oldValue.askFor)
 
     # Step 3.1: if price is detected by NLP, mark it with currency
-    if(oldValue.Amount == '0'):
-        flag = 0
-    else:
-        flag = 1
+    flag = 0 if(oldValue.Amount == '0') else 1
 
     if(oldValue.Amount == '0'):
         for entity in response.entities:
@@ -224,8 +282,9 @@ def send_response():
             if(int(maxValue) > 0):
                 oldValue.Amount = maxValue
                 flag = 1
+    print('Amount is Filtered: ', str(datetime.now() - start_time))
 
-  # Step 3.5 Detect Recurrence
+    # Step 3.5 Detect Recurrence
 
     if(oldValue.ExpenseType == ''):
         if(req.get('queryResult').get('intent').get('displayName') == "checkRentExpense"):
@@ -286,27 +345,7 @@ def send_response():
         except:
             print('Date Error')
 
-    # Checking NLP API for Values
-
-    changeVar = 0
-    for entity in response.entities:
-        entityDetectList = ["CONSUMER_GOOD", "OTHER", "WORK_OF_ART",
-                            "UNKNOWN", "EVENT", "PERSON", "ORGANIZATION"]
-        # For List of entities
-        if any(x in enums.Entity.Type(entity.type).name for x in entityDetectList):
-            if((entity.name.title() != 'Subscription' or entity.name.title() != 'Rent' or entity.name.title() != 'Purchase')):
-                if(oldValue.fullEntity == 0 and (oldValue.askFor == 'None' or oldValue.askFor == 'Entity')):
-                    oldValue.entitySend += (entity.name + ', ')
-                    changeVar = 1
-
-    # For date
-        if ("DATE" in enums.Entity.Type(entity.type).name):
-            oldValue.paymentDate = dateparser.parse(entity.name)
-            if(oldValue.DueDate == "" and oldValue.recurrence == "Yes"):
-                oldValue.DueDate = oldValue.paymentDate - \
-                    timedelta(days=(oldValue.paymentDate.day-1))
-
-    oldValue.fullEntity = changeVar
+    print('Date is Filtered: ', str(datetime.now() - start_time))
 
     # Detect Tense for Paid/Unpaid
     for token in response.tokens:
@@ -317,24 +356,6 @@ def send_response():
                 if(oldValue.paymentDate != ''):
                     oldValue.DueDate = oldValue.paymentDate - \
                         timedelta(days=(oldValue.paymentDate.day-1))
-
-    listTosend = {'inputText':  str(filteredText)}
-
-    # Get Account Head
-    if(oldValue.category == ''):
-        oldValue.category = json.loads(json.dumps(sendResponse(
-            json.loads(json.dumps(listTosend)))))['accountHead']
-        oldValue.category = oldValue.category.replace('_', " ").title()
-
-    # get Tags
-    # tempList = []
-    # if(oldValue.tags == []):
-        # tempList = json.loads(json.dumps(getTags(
-        # json.loads(json.dumps(listTosend)))))['outflow_tags']
-
-        # oldValue.tags.append(oldValue.category.title())
-        # for string in tempList:
-        # oldValue.tags.append(string.title())
 
     result = 'Expense recorded as: \n\n'
     if(oldValue.Amount != '0'):
@@ -363,32 +384,30 @@ def send_response():
             print('No Due Date')
 
     result += ' Payment Category : ' + oldValue.category + ' \n  \n'
-    # result += ' Tags : ' + ' '.join(oldValue.tags) + ' \n  \n'
-
+    tagString = ','.join(map(str, oldValue.tags))
+    tagString = re.sub('_', ' ', tagString)
+    result += ' Tags : ' + ' ' + tagString + ' \n  \n'
 
     print('Missing Value = ' + oldValue.emptyList())
     oldValue.askFor = oldValue.emptyList()
-
+    print('Output Text is Filtered (Pre query) : ',
+          str(datetime.now() - start_time))
     pprint(vars(oldValue))
     if 'None' in oldValue.emptyList():
         url = "https://ajency-qa.api.toppeq.com/graphql"
 
-        # payload = "{\r\n\"operationName\": \"CreateExpense\",\r\n\"variables\": {\r\n\"input\": {\r\n\"company\": 2,\r\n\"title\": \" "+oldValue.Description + "\",\r\n\"description\": \"expense\",\r\n\"amount\": "+oldValue.Amount+",\r\n\"accountingHeadId\": "+mapAChead(oldValue.category)+",\r\n\"recurring\": " + "true" if(
-        #     'Yes' in oldValue.recurrence) else "false"+",\r\n\"expenseRecurrence\": {\r\n\"frequency\": \" "+oldValue.frequency+" \"\r\n},\r\n\"status\": \"draft\"\r\n}\r\n},\r\n\"query\": \"mutation CreateExpense($input: ExpenseInput) {\\n createExpense(input: $input) {\\n id\\n referenceId\\n }\\n}\\n\"\r\n}"
-
-        # payload = "{\r\n\"operationName\": \"CreateExpense\",\r\n\"variables\": {\r\n\"input\": {\r\n\"company\": \"2\",\r\n\"title\": "+oldValue.Description + ",\r\n\"description\": \"expense\",\r\n\"amount\": "+oldValue.Amount+",\r\n\"accountingHeadId\": \""+mapAChead(
-        #     oldValue.category)+"\",\r\n\"paymentStatus\": "+oldValue.paymentStatus+",\r\n\"recurring\": " + True if('Yes' in oldValue.recurrence) else False+",\r\n\"status\": \"draft\"\r\n}\r\n},\r\n\"query\": \"mutation CreateExpense($input: ExpenseInput) {\\n  createExpense(input: $input) {\\n    id\\n    referenceId\\n   }\\n}\\n\"\r\n}"
         payload = {
             "operationName": "CreateExpense",
             "variables": {
                 "input": {
                     "company": "2",
-                    "title": oldValue.Description ,
+                    "title": oldValue.Description,
                     "description": oldValue.Description,
                     "amount": oldValue.Amount,
-                    "accountingHeadId": mapAChead(oldValue.category),
+                    # "accountingHeadId": mapAChead(oldValue.category),
                     "paymentStatus": oldValue.paymentStatus,
                     "recurring": True if('Yes' in oldValue.recurrence) else False,
+                    "tags": oldValue.tags,
                     "status": "draft"
                 }
             },
@@ -401,9 +420,15 @@ def send_response():
             response = requests.request(
                 "POST", url, headers=headers, data=json.dumps(payload))
             print(response)
-            f = open("demofile2.txt", "a")
-            f.write(str(payload))
-            f.close()
+            OutputURL = 'Your Transaction has been recorded. To Check it, Click the link below. \n  https://ajency-qa.toppeq.com/cashflow/outflow/planned#/db_'
+            outputJSON = response.json()
+            print('JSON = ', str(outputJSON))
+            if(outputJSON['data']['createExpense']['id']):
+                OutputURL = OutputURL + \
+                    str(outputJSON['data']['createExpense']['id'])
+                result = OutputURL
+
+            print('Response Received: ', str(datetime.now() - start_time))
         except Exception as e:
             print('API Failed')
             print(e)
@@ -413,9 +438,9 @@ def send_response():
         result = 'How much was the amount for the transaction?'
     elif 'Date' in oldValue.emptyList():
         result = 'What is the date of the transaction? '
-    elif 'Entity' in oldValue.emptyList():
-        result = 'What was the transaction done for?'
+    #elif 'Entity' in oldValue.emptyList():
+        #result = 'What was the transaction done for?'
     elif 'Frequency' in oldValue.emptyList():
         result = 'How freqently you want the transaction to repeat? \n (Yearly, Monthly, Weekly)'
-
+    print('Sending response: ', str(datetime.now() - start_time))
     return {'fulfillmentText':  result}
