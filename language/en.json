@@ -1,0 +1,17 @@
+{
+    "languageCode": "en",
+    "welcomeIntentText": "Default Welcome Intent",
+    "fallbackIntentText": "Default Welcome Intent",
+    "outputSummaryMessage1": "\n \nHere's a summary: \n \n*Description:* ",
+    "outputSummaryMessage2": "\n*Amount:* ",
+    "outputSummaryMessage3": "\n*Payment Status* : ",
+    "outputSummaryMessage4": "\n*Date of Expense Paid* : ",
+    "outputSummaryMessage5": "\n*Due Date* : ",
+    "outputSummaryMessage6": "\n*Recurring* : ",
+    "outputSummaryMessage7": "\n*Frequency* : ",
+    "outputSummaryMessage8": "\n*Category* : ",
+    "outputSummaryMessage9": "\n*Tags* : #",
+    "outputSummaryMessage10": "\n*Users Notified*: ",
+    "successWhatsappMessage": "Great! Your expense was added successfully \u2705 \n  https://ajency-qa.toppeq.com/cashflow/outflow/planned#/db_",
+    "failedCompanyMessage":"Hi there! \nI would like to apologize but you will not be able to use Expense buddy as you are not part of AJ Golf company. If you can let me know your email id I could ask the admin from AJ Golf to add you to the company."
+}

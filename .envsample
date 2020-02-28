@@ -1,0 +1,6 @@
+SQLALCHEMY_SERVER_URL = SQLachemy database_url 
+WA_DIALOGFLOW_LOCATION = ../ url to the JSON of Dialogflow agent used for connecting to slotfilling API
+WA_DIALOGFLOW_PROJECT_ID = project ID of Dialogflow agent used for connecting to slotfilling API
+SLOT_DIALOGFLOW_PROJECT_ID = Project ID of Dialogflow agent used for NLP API
+SLOT_DIALOGFLOW_LOCATION = ../ url to JSON of Dialogflow agent used for NLP API
+WHATSAPP_ACCOUNT_MODE = GLOBAL #OR DEDICATED
